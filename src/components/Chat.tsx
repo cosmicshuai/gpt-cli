@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { Highlight } from 'ink-highlight';
@@ -67,6 +67,26 @@ const CONFIG_DIR = join(homedir(), '.config', 'gpt-cli');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const HISTORY_DIR = join(CONFIG_DIR, 'history');
 const MAX_HISTORY_SESSIONS = 50;
+
+// Virtual scroll constants
+const DEFAULT_TERMINAL_ROWS = 24;
+const RESERVED_CHROME_ROWS = 8;   // rows used by header, input, and other UI chrome
+const MIN_VISIBLE_MESSAGES = 3;
+const ROWS_PER_MESSAGE_OVERHEAD = 3; // marginY, role header, padding
+const TERMINAL_COLS_FALLBACK = 80;
+
+// Estimate how many terminal rows a message will occupy
+const estimateMessageRows = (message: Message, terminalCols: number): number => {
+  const content = message.content || '';
+  const lines = content.split('\n');
+  const usableCols = Math.max(1, terminalCols - 2); // account for 2-char left padding
+  let rows = ROWS_PER_MESSAGE_OVERHEAD;
+  for (const line of lines) {
+    // Each line wraps based on terminal width; empty lines still occupy 1 row
+    rows += line.length === 0 ? 1 : Math.ceil(line.length / usableCols);
+  }
+  return rows;
+};
 
 // Calculate tokens for messages
 const calculateTokens = (messages: Message[]): number => {
@@ -355,6 +375,30 @@ const Chat: React.FC = () => {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
 
+  // Virtual scroll state
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const { stdout } = useStdout();
+  const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS;
+  const terminalCols = stdout.columns || TERMINAL_COLS_FALLBACK;
+  const availableRows = terminalRows - RESERVED_CHROME_ROWS;
+
+  // Dynamically compute how many messages fit by estimating rows from the bottom
+  const computeMaxVisible = useCallback((): number => {
+    if (messages.length === 0) return MIN_VISIBLE_MESSAGES;
+    let usedRows = 0;
+    let count = 0;
+    const endIdx = Math.max(0, messages.length - scrollOffset);
+    for (let i = endIdx - 1; i >= 0; i--) {
+      const rowsNeeded = estimateMessageRows(messages[i], terminalCols);
+      if (usedRows + rowsNeeded > availableRows && count >= MIN_VISIBLE_MESSAGES) break;
+      usedRows += rowsNeeded;
+      count++;
+    }
+    return Math.max(MIN_VISIBLE_MESSAGES, count);
+  }, [availableRows, terminalCols, messages, scrollOffset]);
+
+  const maxVisibleMessages = computeMaxVisible();
+
   // Use ref to track if title has been generated
   const titleGeneratedRef = useRef(false);
 
@@ -405,6 +449,27 @@ const Chat: React.FC = () => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [messages.length]);
+
+  // Clamp scrollOffset when terminal resizes to prevent blank space
+  useEffect(() => {
+    setScrollOffset(prev => {
+      const maxOffset = Math.max(0, messages.length - MIN_VISIBLE_MESSAGES);
+      return Math.min(prev, maxOffset);
+    });
+  }, [terminalRows, terminalCols, messages.length]);
+
+  // Compute visible messages window
+  const totalMessages = messages.length;
+  const startIndex = Math.max(0, totalMessages - maxVisibleMessages - scrollOffset);
+  const endIndex = Math.max(0, totalMessages - scrollOffset);
+  const visibleMessages = messages.slice(startIndex, endIndex);
+  const hasMoreAbove = startIndex > 0;
+  const hasMoreBelow = scrollOffset > 0;
 
   // Auto-save session when messages change
   useEffect(() => {
@@ -511,7 +576,7 @@ const Chat: React.FC = () => {
     
     setMessages(prev => [...prev, { 
       role: 'assistant', 
-      content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages` 
+      content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Ctrl+U         Scroll up messages\n  Ctrl+D         Scroll down messages\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages` 
     }]);
   }, []);
 
@@ -833,6 +898,17 @@ const Chat: React.FC = () => {
         editLastUserMessage();
         return;
       }
+      // Ctrl+U: Scroll up messages
+      if (ch.toLowerCase() === 'u') {
+        const maxScrollOffset = Math.max(0, messages.length - maxVisibleMessages);
+        setScrollOffset(prev => Math.min(prev + maxVisibleMessages, maxScrollOffset));
+        return;
+      }
+      // Ctrl+D: Scroll down messages
+      if (ch.toLowerCase() === 'd') {
+        setScrollOffset(prev => Math.max(0, prev - maxVisibleMessages));
+        return;
+      }
     }
 
     // Handle resume prompt Y/N
@@ -975,7 +1051,7 @@ const Chat: React.FC = () => {
         </Box>
       )}
 
-      {/* Messages */}
+      {/* Messages (virtual scrolling - only renders visible messages) */}
       <Box flexDirection="column" flexGrow={1} padding={1}>
         {messages.length === 0 && !pendingSession && (
           <Box>
@@ -988,8 +1064,14 @@ const Chat: React.FC = () => {
           </Box>
         )}
         
-        {messages.map((message, index) => (
-          <Box key={index} flexDirection="column" marginY={1}>
+        {hasMoreAbove && (
+          <Box>
+            <Text color="gray">▲ {startIndex} earlier message{startIndex !== 1 ? 's' : ''} (Ctrl+U to scroll up)</Text>
+          </Box>
+        )}
+
+        {visibleMessages.map((message, index) => (
+          <Box key={startIndex + index} flexDirection="column" marginY={1}>
             <Box>
               <Text bold color={message.role === 'user' ? 'green' : 'blue'}>
                 {message.role === 'user' ? 'You:' : 'GPT:'}
@@ -1014,6 +1096,12 @@ const Chat: React.FC = () => {
               <Spinner type="dots" />
               {' '}Thinking...
             </Text>
+          </Box>
+        )}
+
+        {hasMoreBelow && (
+          <Box>
+            <Text color="gray">▼ {scrollOffset} newer message{scrollOffset !== 1 ? 's' : ''} (Ctrl+D to scroll down)</Text>
           </Box>
         )}
       </Box>
