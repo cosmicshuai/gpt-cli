@@ -68,6 +68,12 @@ const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const HISTORY_DIR = join(CONFIG_DIR, 'history');
 const MAX_HISTORY_SESSIONS = 50;
 
+// Virtual scroll constants
+const DEFAULT_TERMINAL_ROWS = 24;
+const RESERVED_CHROME_ROWS = 8;   // rows used by header, input, and other UI chrome
+const AVG_ROWS_PER_MESSAGE = 4;   // estimated average rows per message
+const MIN_VISIBLE_MESSAGES = 3;
+
 // Calculate tokens for messages
 const calculateTokens = (messages: Message[]): number => {
   const text = messages.map(m => m.content).join('\n');
@@ -358,9 +364,8 @@ const Chat: React.FC = () => {
   // Virtual scroll state
   const [scrollOffset, setScrollOffset] = useState(0);
   const { stdout } = useStdout();
-  const terminalRows = stdout.rows || 24;
-  // Estimate visible messages: reserve ~8 rows for header/input/chrome, ~4 rows per message avg
-  const maxVisibleMessages = Math.max(3, Math.floor((terminalRows - 8) / 4));
+  const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS;
+  const maxVisibleMessages = Math.max(MIN_VISIBLE_MESSAGES, Math.floor((terminalRows - RESERVED_CHROME_ROWS) / AVG_ROWS_PER_MESSAGE));
 
   // Use ref to track if title has been generated
   const titleGeneratedRef = useRef(false);
@@ -855,7 +860,8 @@ const Chat: React.FC = () => {
       }
       // Ctrl+U: Scroll up messages
       if (ch.toLowerCase() === 'u') {
-        setScrollOffset(prev => Math.min(prev + maxVisibleMessages, Math.max(0, messages.length - maxVisibleMessages)));
+        const maxScrollOffset = Math.max(0, messages.length - maxVisibleMessages);
+        setScrollOffset(prev => Math.min(prev + maxVisibleMessages, maxScrollOffset));
         return;
       }
       // Ctrl+D: Scroll down messages
