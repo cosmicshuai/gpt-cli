@@ -71,8 +71,22 @@ const MAX_HISTORY_SESSIONS = 50;
 // Virtual scroll constants
 const DEFAULT_TERMINAL_ROWS = 24;
 const RESERVED_CHROME_ROWS = 8;   // rows used by header, input, and other UI chrome
-const AVG_ROWS_PER_MESSAGE = 4;   // estimated average rows per message
 const MIN_VISIBLE_MESSAGES = 3;
+const ROWS_PER_MESSAGE_OVERHEAD = 3; // marginY, role header, padding
+const TERMINAL_COLS_FALLBACK = 80;
+
+// Estimate how many terminal rows a message will occupy
+const estimateMessageRows = (message: Message, terminalCols: number): number => {
+  const content = message.content || '';
+  const lines = content.split('\n');
+  const usableCols = Math.max(1, terminalCols - 2); // account for 2-char left padding
+  let rows = ROWS_PER_MESSAGE_OVERHEAD;
+  for (const line of lines) {
+    // Each line wraps based on terminal width; empty lines still occupy 1 row
+    rows += line.length === 0 ? 1 : Math.ceil(line.length / usableCols);
+  }
+  return rows;
+};
 
 // Calculate tokens for messages
 const calculateTokens = (messages: Message[]): number => {
@@ -365,7 +379,25 @@ const Chat: React.FC = () => {
   const [scrollOffset, setScrollOffset] = useState(0);
   const { stdout } = useStdout();
   const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS;
-  const maxVisibleMessages = Math.max(MIN_VISIBLE_MESSAGES, Math.floor((terminalRows - RESERVED_CHROME_ROWS) / AVG_ROWS_PER_MESSAGE));
+  const terminalCols = stdout.columns || TERMINAL_COLS_FALLBACK;
+  const availableRows = terminalRows - RESERVED_CHROME_ROWS;
+
+  // Dynamically compute how many messages fit by estimating rows from the bottom
+  const computeMaxVisible = useCallback((): number => {
+    if (messages.length === 0) return MIN_VISIBLE_MESSAGES;
+    let usedRows = 0;
+    let count = 0;
+    const endIdx = Math.max(0, messages.length - scrollOffset);
+    for (let i = endIdx - 1; i >= 0; i--) {
+      const rowsNeeded = estimateMessageRows(messages[i], terminalCols);
+      if (usedRows + rowsNeeded > availableRows && count >= MIN_VISIBLE_MESSAGES) break;
+      usedRows += rowsNeeded;
+      count++;
+    }
+    return Math.max(MIN_VISIBLE_MESSAGES, count);
+  }, [availableRows, terminalCols, messages, scrollOffset]);
+
+  const maxVisibleMessages = computeMaxVisible();
 
   // Use ref to track if title has been generated
   const titleGeneratedRef = useRef(false);
@@ -422,6 +454,14 @@ const Chat: React.FC = () => {
   useEffect(() => {
     setScrollOffset(0);
   }, [messages.length]);
+
+  // Clamp scrollOffset when terminal resizes to prevent blank space
+  useEffect(() => {
+    setScrollOffset(prev => {
+      const maxOffset = Math.max(0, messages.length - MIN_VISIBLE_MESSAGES);
+      return Math.min(prev, maxOffset);
+    });
+  }, [terminalRows, terminalCols, messages.length]);
 
   // Compute visible messages window
   const totalMessages = messages.length;
