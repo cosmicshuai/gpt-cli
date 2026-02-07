@@ -295,6 +295,10 @@ const Chat = () => {
     const [attachedFiles, setAttachedFiles] = useState([]);
     // Use ref to track if title has been generated
     const titleGeneratedRef = useRef(false);
+    // Use ref to track latest messages for avoiding stale closure
+    const messagesRef = useRef([]);
+    // Use ref to preserve createdAt timestamp across saves
+    const sessionCreatedAtRef = useRef(0);
     // Initialize config on mount
     useEffect(() => {
         const init = async () => {
@@ -327,6 +331,10 @@ const Chat = () => {
             updateConfig();
         }
     }, [currentModel, sessionId, isInitialized]);
+    // Sync messagesRef with latest messages
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
     // Auto-save session when messages change
     useEffect(() => {
         if (isInitialized && messages.length > 0 && sessionId) {
@@ -334,7 +342,7 @@ const Chat = () => {
                 const session = {
                     id: sessionId,
                     title: sessionTitle || 'Untitled',
-                    createdAt: Date.now(),
+                    createdAt: sessionCreatedAtRef.current || Date.now(),
                     updatedAt: Date.now(),
                     messages,
                     model: currentModel,
@@ -462,6 +470,7 @@ const Chat = () => {
             setCurrentModel(session.model);
             setSessionId(session.id);
             setSessionTitle(session.title);
+            sessionCreatedAtRef.current = session.createdAt;
             titleGeneratedRef.current = true;
             setMessages(prev => [...prev, {
                     role: 'assistant',
@@ -481,6 +490,7 @@ const Chat = () => {
         setSessionId(newSessionId);
         setSessionTitle('');
         titleGeneratedRef.current = false;
+        sessionCreatedAtRef.current = Date.now();
         setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: '✅ Started new session'
@@ -637,13 +647,15 @@ const Chat = () => {
             setIsLoading(false);
             setStreamingContent('');
         }
-    }, [messages, exit, currentModel, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle]);
+    }, [messages, exit, currentModel, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle, attachedFiles]);
     // Regenerate last assistant response
     const regenerateLastResponse = useCallback(async () => {
+        // Use messagesRef.current to get latest messages and avoid stale closure
+        const latestMessages = messagesRef.current;
         // Find last assistant message (iterate backwards)
         let lastAssistantIndex = -1;
-        for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === 'assistant') {
+        for (let i = latestMessages.length - 1; i >= 0; i--) {
+            if (latestMessages[i].role === 'assistant') {
                 lastAssistantIndex = i;
                 break;
             }
@@ -653,35 +665,37 @@ const Chat = () => {
         // Find corresponding user message (iterate backwards from assistant)
         let lastUserIndex = -1;
         for (let i = lastAssistantIndex - 1; i >= 0; i--) {
-            if (messages[i].role === 'user') {
+            if (latestMessages[i].role === 'user') {
                 lastUserIndex = i;
                 break;
             }
         }
         if (lastUserIndex === -1)
             return;
-        const userMessage = messages[lastUserIndex];
+        const userMessage = latestMessages[lastUserIndex];
         // Remove assistant message and all after it
-        const newMessages = messages.slice(0, lastAssistantIndex);
+        const newMessages = latestMessages.slice(0, lastAssistantIndex);
         setMessages(newMessages);
         // Resubmit user message
         setInput(userMessage.content);
         // Use setTimeout to ensure state update before submit
         setTimeout(() => handleSubmit(userMessage.content), 0);
-    }, [messages, handleSubmit]);
+    }, [handleSubmit]);
     // Edit last user message
     const editLastUserMessage = useCallback(() => {
+        // Use messagesRef.current to get latest messages and avoid stale closure
+        const latestMessages = messagesRef.current;
         let lastUserMessage;
-        for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === 'user') {
-                lastUserMessage = messages[i];
+        for (let i = latestMessages.length - 1; i >= 0; i--) {
+            if (latestMessages[i].role === 'user') {
+                lastUserMessage = latestMessages[i];
                 break;
             }
         }
         if (lastUserMessage) {
             setInput(lastUserMessage.content);
         }
-    }, [messages]);
+    }, []);
     // Handle keyboard navigation
     useInput((ch, key) => {
         // Handle Shift+Enter for new line (multiline input)

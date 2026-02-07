@@ -361,6 +361,9 @@ const Chat: React.FC = () => {
   // Use ref to track latest messages for avoiding stale closure
   const messagesRef = useRef<Message[]>([]);
 
+  // Use ref to preserve createdAt timestamp across saves
+  const sessionCreatedAtRef = useRef<number>(0);
+
   // Initialize config on mount
   useEffect(() => {
     const init = async () => {
@@ -410,7 +413,7 @@ const Chat: React.FC = () => {
         const session: Session = {
           id: sessionId,
           title: sessionTitle || 'Untitled',
-          createdAt: Date.now(),
+          createdAt: sessionCreatedAtRef.current || Date.now(),
           updatedAt: Date.now(),
           messages,
           model: currentModel,
@@ -550,6 +553,7 @@ const Chat: React.FC = () => {
       setCurrentModel(session.model);
       setSessionId(session.id);
       setSessionTitle(session.title);
+      sessionCreatedAtRef.current = session.createdAt;
       titleGeneratedRef.current = true;
       setMessages(prev => [...prev, { 
         role: 'assistant', 
@@ -569,6 +573,7 @@ const Chat: React.FC = () => {
     setSessionId(newSessionId);
     setSessionTitle('');
     titleGeneratedRef.current = false;
+    sessionCreatedAtRef.current = Date.now();
     setMessages(prev => [...prev, { 
       role: 'assistant', 
       content: '✅ Started new session' 
