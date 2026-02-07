@@ -408,6 +408,9 @@ const Chat: React.FC = () => {
   // Use ref to preserve createdAt timestamp across saves
   const sessionCreatedAtRef = useRef<number>(0);
 
+  // Session start time for duration tracking
+  const sessionStartTimeRef = useRef<number>(Date.now());
+
   // Initialize config on mount
   useEffect(() => {
     const init = async () => {
@@ -546,7 +549,7 @@ const Chat: React.FC = () => {
       setCurrentModel(selectedModel);
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `✅ Model switched to ${selectedModel}` 
+        content: `🤖 Model switched to ${selectedModel}` 
       }]);
     }
     setShowModelSelector(false);
@@ -559,24 +562,40 @@ const Chat: React.FC = () => {
       setCurrentModel(trimmedModel);
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `✅ Model switched to ${trimmedModel}` 
+        content: `🤖 Model switched to ${trimmedModel}` 
       }]);
     } else {
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `❌ Unknown model: ${trimmedModel}\nAvailable models: ${AVAILABLE_MODELS.join(', ')}` 
+        content: `⚠️ Unknown model: ${trimmedModel}\n\nAvailable models:\n${AVAILABLE_MODELS.join('\n')}` 
       }]);
     }
   }, []);
 
   const showHelp = useCallback(() => {
     const helpText = COMMANDS.map(cmd => 
-      `  ${cmd.name.padEnd(12)} ${cmd.description}${cmd.usage ? ` (${cmd.usage})` : ''}`
+      `  ${cmd.name.padEnd(12)} ${cmd.description}${cmd.usage ? ` · ${cmd.usage}` : ''}`
     ).join('\n');
     
     setMessages(prev => [...prev, { 
       role: 'assistant', 
-      content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Ctrl+U         Scroll up messages\n  Ctrl+D         Scroll down messages\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages` 
+      content: `📖 Available Commands
+
+${helpText}
+
+⌨️  Keyboard Shortcuts
+  Ctrl+R       Regenerate last response
+  Ctrl+L       Clear chat history
+  Ctrl+P / ↑   Edit last user message
+  Ctrl+U       Scroll up messages
+  Ctrl+D       Scroll down messages
+  Shift+Enter  Insert new line (multiline)
+  ESC          Exit / Cancel selection
+
+💡 Tips
+• Type / and use ↑↓ to select commands
+• Use @filename to attach files
+• Use Shift+Enter for multiline messages` 
     }]);
   }, []);
 
@@ -591,7 +610,7 @@ const Chat: React.FC = () => {
     if (sessions.length === 0) {
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: 'No saved sessions found.' 
+        content: '💭 No saved sessions found.' 
       }]);
       return;
     }
@@ -599,12 +618,13 @@ const Chat: React.FC = () => {
     const sessionList = sessions.map((s, i) => {
       const date = new Date(s.updatedAt).toLocaleDateString();
       const time = new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      return `  ${i + 1}. ${s.title} | ${date} ${time} | ${s.messages.length} messages`;
+      const isCurrent = s.id === sessionId;
+      return `  ${i + 1}. ${isCurrent ? '▸ ' : '  '}${s.title} · ${date} ${time} · ${s.messages.length} messages${isCurrent ? ' (current)' : ''}`;
     }).join('\n');
     
     setMessages(prev => [...prev, { 
       role: 'assistant', 
-      content: `📚 Recent Sessions (last 10):\n\n${sessionList}\n\nUse /resume <id> to restore a session.\nCurrent session ID: ${sessionId.slice(0, 8)}...` 
+      content: `📚 Recent Sessions (last 10)\n\n${sessionList}\n\n💡 Use /resume <id> to restore a session` 
     }]);
   }, [sessionId]);
 
@@ -619,10 +639,11 @@ const Chat: React.FC = () => {
       setSessionId(session.id);
       setSessionTitle(session.title);
       sessionCreatedAtRef.current = session.createdAt;
+      sessionStartTimeRef.current = Date.now();
       titleGeneratedRef.current = true;
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `✅ Resumed session: "${session.title}"` 
+        content: `✨ Resumed session: "${session.title}"` 
       }]);
     } else {
       setMessages(prev => [...prev, { 
@@ -639,11 +660,64 @@ const Chat: React.FC = () => {
     setSessionTitle('');
     titleGeneratedRef.current = false;
     sessionCreatedAtRef.current = Date.now();
+    sessionStartTimeRef.current = Date.now();
     setMessages(prev => [...prev, { 
       role: 'assistant', 
-      content: '✅ Started new session' 
+      content: '✨ Started new session' 
     }]);
   }, []);
+
+  // Format duration from milliseconds to human-readable string
+  const formatDuration = (ms: number): string => {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${seconds % 60}s`;
+    }
+    return `${seconds}s`;
+  };
+
+  // Show exit statistics with a beautiful panel
+  const showExitStats = useCallback(async () => {
+    const duration = Date.now() - sessionStartTimeRef.current;
+    const userMessages = messages.filter(m => m.role === 'user').length;
+    const assistantMessages = messages.filter(m => m.role === 'assistant').length;
+    const totalMessages = userMessages + assistantMessages;
+    const totalTokens = calculateTokens(messages);
+    
+    // Create the stats panel
+    const title = sessionTitle || 'Untitled Session';
+    const displayTitle = title.length > 35 ? title.substring(0, 35) + '...' : title;
+    const durationStr = formatDuration(duration);
+    const tokensStr = formatNumber(totalTokens);
+    
+    // Print exit stats panel
+    console.clear();
+    console.log('');
+    console.log('╔══════════════════════════════════════════════════════╗');
+    console.log('║                                                      ║');
+    console.log('║           👋  Thanks for chatting!                   ║');
+    console.log('║                                                      ║');
+    console.log('╠══════════════════════════════════════════════════════╣');
+    console.log(`║  📋  Session : ${displayTitle.padEnd(39)}║`);
+    console.log(`║  ⏱️   Duration : ${durationStr.padEnd(37)}║`);
+    console.log(`║  💬  Messages: ${String(totalMessages).padStart(3)}  (${String(userMessages).padStart(2)} user · ${String(assistantMessages).padStart(2)} assistant)       ║`);
+    console.log(`║  🤖  Model   : ${currentModel.padEnd(39)}║`);
+    console.log(`║  🪙  Tokens  : ${tokensStr.padEnd(39)}║`);
+    console.log('╚══════════════════════════════════════════════════════╝');
+    console.log('');
+    console.log('              Have a great day! ✨');
+    console.log('');
+    
+    // Wait 1.5 seconds before exiting
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    exit();
+  }, [messages, sessionTitle, currentModel, exit]);
 
   const handleResumePrompt = useCallback((accept: boolean) => {
     if (accept && pendingSession) {
@@ -652,14 +726,16 @@ const Chat: React.FC = () => {
       setSessionId(pendingSession.id);
       setSessionTitle(pendingSession.title);
       titleGeneratedRef.current = true;
+      sessionStartTimeRef.current = Date.now();
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `✅ Resumed session: "${pendingSession.title}"` 
+        content: `✨ Resumed session: "${pendingSession.title}"` 
       }]);
     } else {
       // Start fresh with new session ID
       const newSessionId = generateSessionId();
       setSessionId(newSessionId);
+      sessionStartTimeRef.current = Date.now();
     }
     setPendingSession(null);
   }, [pendingSession]);
@@ -685,7 +761,7 @@ const Chat: React.FC = () => {
     }
 
     if (trimmedValue === '/exit' || trimmedValue === '/quit') {
-      exit();
+      await showExitStats();
       return;
     }
 
@@ -1002,8 +1078,9 @@ const Chat: React.FC = () => {
       <Box flexDirection="column" height="100%" justifyContent="center" alignItems="center">
         <Text color="cyan">
           <Spinner type="dots" />
-          {' '}Loading...
+          {' '}Initializing...
         </Text>
+        <Text color="gray">Loading configuration and checking for previous sessions</Text>
       </Box>
     );
   }
@@ -1011,20 +1088,22 @@ const Chat: React.FC = () => {
   return (
     <Box flexDirection="column" height="100%">
       {/* Header */}
-      <Box borderStyle="single" paddingX={1}>
-        <Text bold color="cyan">🤖 GPT CLI</Text>
-        <Text> | Model: </Text>
-        <Text bold color="yellow">{currentModel}</Text>
+      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Text bold color="cyan">⚡ GPT CLI</Text>
+        <Text color="gray"> │ </Text>
+        <Text color="white">Model:</Text>
+        <Text bold color="yellow"> {currentModel}</Text>
         {sessionTitle && (
           <>
-            <Text> | </Text>
-            <Text bold color="green">{sessionTitle}</Text>
+            <Text color="gray"> │ </Text>
+            <Text color="white">Session:</Text>
+            <Text bold color="green"> {sessionTitle.length > 20 ? sessionTitle.substring(0, 20) + '...' : sessionTitle}</Text>
           </>
         )}
-        <Text> | </Text>
-        <Text color="gray">Tokens: {formatNumber(calculateTokens(messages))} / {formatNumber(getModelTokenLimit(currentModel))}</Text>
-        <Text> | </Text>
-        <Text bold>/help</Text>
+        <Text color="gray"> │ </Text>
+        <Text color="gray">🪙 {formatNumber(calculateTokens(messages))}/{formatNumber(getModelTokenLimit(currentModel))}</Text>
+        <Text color="gray"> │ </Text>
+        <Text bold color="cyan">/help</Text>
       </Box>
 
       {/* Resume Prompt */}
@@ -1033,14 +1112,18 @@ const Chat: React.FC = () => {
           flexDirection="column" 
           borderStyle="round" 
           borderColor="yellow"
-          paddingX={1}
+          paddingX={2}
           marginX={1}
           marginY={1}
         >
           <Text bold color="yellow">💾 Resume Previous Session?</Text>
-          <Text>Last session: "{pendingSession.title}"</Text>
-          <Text>Messages: {pendingSession.messages.length}</Text>
-          <Text>Last updated: {new Date(pendingSession.updatedAt).toLocaleString()}</Text>
+          <Box marginY={1}>
+            <Text color="white">Session: </Text>
+            <Text bold color="green">"{pendingSession.title}"</Text>
+          </Box>
+          <Box>
+            <Text color="gray">💬 {pendingSession.messages.length} messages · 📅 {new Date(pendingSession.updatedAt).toLocaleString()}</Text>
+          </Box>
           <Box marginTop={1}>
             <Text color="gray">Press </Text>
             <Text bold color="green">Y</Text>
@@ -1054,13 +1137,15 @@ const Chat: React.FC = () => {
       {/* Messages (virtual scrolling - only renders visible messages) */}
       <Box flexDirection="column" flexGrow={1} padding={1}>
         {messages.length === 0 && !pendingSession && (
-          <Box>
-            <Text color="gray">Welcome! Start typing to chat with GPT.\n</Text>
-            <Text color="gray">Type </Text>
-            <Text bold color="cyan">/</Text>
-            <Text color="gray"> for commands, </Text>
-            <Text bold color="cyan">Shift+Enter</Text>
-            <Text color="gray"> for new line.</Text>
+          <Box flexDirection="column">
+            <Text color="cyan">👋 Welcome! Start typing to chat with GPT.</Text>
+            <Box marginTop={1}>
+              <Text color="gray">💡 Tip: Type </Text>
+              <Text bold color="cyan">/</Text>
+              <Text color="gray"> for commands, </Text>
+              <Text bold color="cyan">Shift+Enter</Text>
+              <Text color="gray"> for new line</Text>
+            </Box>
           </Box>
         )}
         
@@ -1074,13 +1159,13 @@ const Chat: React.FC = () => {
           <Box key={startIndex + index} flexDirection="column" marginY={1}>
             <Box>
               <Text bold color={message.role === 'user' ? 'green' : 'blue'}>
-                {message.role === 'user' ? 'You:' : 'GPT:'}
+                {message.role === 'user' ? '🧑 You' : '✨ Assistant'}
               </Text>
-              {message.model && (
-                <Text color="gray"> ({message.model})</Text>
+              {message.model && message.role === 'assistant' && (
+                <Text color="gray"> · {message.model}</Text>
               )}
             </Box>
-            <Box paddingLeft={2} flexDirection="column">
+            <Box paddingLeft={2} flexDirection="column" borderLeft={message.role === 'user'} borderColor={message.role === 'user' ? 'green' : 'blue'}>
               <MessageContent 
                 content={message.content} 
                 isStreaming={message.isStreaming}
@@ -1119,7 +1204,7 @@ const Chat: React.FC = () => {
           {AVAILABLE_MODELS.map((model, index) => (
             <Box key={model}>
               <Text color={index === selectedModelIndex ? 'yellow' : 'white'}>
-                {index === selectedModelIndex ? '▶ ' : '  '}
+                {index === selectedModelIndex ? '● ' : '○ '}
               </Text>
               <Text 
                 bold={index === selectedModelIndex}
@@ -1149,7 +1234,7 @@ const Chat: React.FC = () => {
           {filteredCommands.map((cmd, index) => (
             <Box key={cmd.name}>
               <Text color={index === selectedCommandIndex ? 'cyan' : 'white'}>
-                {index === selectedCommandIndex ? '▶ ' : '  '}
+                {index === selectedCommandIndex ? '● ' : '○ '}
               </Text>
               <Text 
                 bold={index === selectedCommandIndex}
@@ -1157,7 +1242,7 @@ const Chat: React.FC = () => {
               >
                 {cmd.name}
               </Text>
-              <Text color="gray"> - {cmd.description}</Text>
+              <Text color="gray"> — {cmd.description}</Text>
             </Box>
           ))}
           <Text color="gray">Use ↑↓ to navigate, Tab/Enter to select</Text>
@@ -1178,7 +1263,9 @@ const Chat: React.FC = () => {
           {fileList.map((file, index) => (
             <Box key={file}>
               <Text color={index === selectedFileIndex ? 'magenta' : 'white'}>
-                {index === selectedFileIndex ? '▶ ' : '  '}
+                {index === selectedFileIndex ? '● ' : '○ '}
+              </Text>
+              <Text color={index === selectedFileIndex ? 'magenta' : 'white'}>
                 {file}
               </Text>
             </Box>
@@ -1190,21 +1277,21 @@ const Chat: React.FC = () => {
       {/* File attachment hint */}
       {attachedFiles.length > 0 && !showFileSelector && (
         <Box marginX={1} marginBottom={1}>
-          <Text color="gray">📎 {attachedFiles.join(', ')}</Text>
+          <Text color="magenta">📎 {attachedFiles.join(', ')}</Text>
         </Box>
       )}
 
       {/* Input */}
-      <Box borderStyle="single" borderColor={showModelSelector ? 'yellow' : 'cyan'} paddingX={1}>
+      <Box borderStyle="round" borderColor={showModelSelector ? 'yellow' : 'green'} paddingX={1}>
         <Box marginRight={1}>
-          <Text bold color="green">➜</Text>
+          <Text bold color="green">❯</Text>
         </Box>
         <TextInput
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
           focus={!showCommands && !showModelSelector && !showFileSelector}
-          placeholder={showModelSelector ? "Select model with arrow keys..." : "Type message (Shift+Enter for new line, / for commands)..."}
+          placeholder={showModelSelector ? "Use ↑↓ to select a model, Enter to confirm" : "Type a message... (Shift+Enter for new line, / for commands, ESC to exit)"}
         />
       </Box>
     </Box>

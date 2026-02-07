@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { Highlight } from 'ink-highlight';
@@ -36,6 +36,24 @@ const CONFIG_DIR = join(homedir(), '.config', 'gpt-cli');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const HISTORY_DIR = join(CONFIG_DIR, 'history');
 const MAX_HISTORY_SESSIONS = 50;
+// Virtual scroll constants
+const DEFAULT_TERMINAL_ROWS = 24;
+const RESERVED_CHROME_ROWS = 8; // rows used by header, input, and other UI chrome
+const MIN_VISIBLE_MESSAGES = 3;
+const ROWS_PER_MESSAGE_OVERHEAD = 3; // marginY, role header, padding
+const TERMINAL_COLS_FALLBACK = 80;
+// Estimate how many terminal rows a message will occupy
+const estimateMessageRows = (message, terminalCols) => {
+    const content = message.content || '';
+    const lines = content.split('\n');
+    const usableCols = Math.max(1, terminalCols - 2); // account for 2-char left padding
+    let rows = ROWS_PER_MESSAGE_OVERHEAD;
+    for (const line of lines) {
+        // Each line wraps based on terminal width; empty lines still occupy 1 row
+        rows += line.length === 0 ? 1 : Math.ceil(line.length / usableCols);
+    }
+    return rows;
+};
 // Calculate tokens for messages
 const calculateTokens = (messages) => {
     const text = messages.map(m => m.content).join('\n');
@@ -293,12 +311,37 @@ const Chat = () => {
     const [fileList, setFileList] = useState([]);
     const [selectedFileIndex, setSelectedFileIndex] = useState(0);
     const [attachedFiles, setAttachedFiles] = useState([]);
+    // Virtual scroll state
+    const [scrollOffset, setScrollOffset] = useState(0);
+    const { stdout } = useStdout();
+    const terminalRows = stdout.rows || DEFAULT_TERMINAL_ROWS;
+    const terminalCols = stdout.columns || TERMINAL_COLS_FALLBACK;
+    const availableRows = terminalRows - RESERVED_CHROME_ROWS;
+    // Dynamically compute how many messages fit by estimating rows from the bottom
+    const computeMaxVisible = useCallback(() => {
+        if (messages.length === 0)
+            return MIN_VISIBLE_MESSAGES;
+        let usedRows = 0;
+        let count = 0;
+        const endIdx = Math.max(0, messages.length - scrollOffset);
+        for (let i = endIdx - 1; i >= 0; i--) {
+            const rowsNeeded = estimateMessageRows(messages[i], terminalCols);
+            if (usedRows + rowsNeeded > availableRows && count >= MIN_VISIBLE_MESSAGES)
+                break;
+            usedRows += rowsNeeded;
+            count++;
+        }
+        return Math.max(MIN_VISIBLE_MESSAGES, count);
+    }, [availableRows, terminalCols, messages, scrollOffset]);
+    const maxVisibleMessages = computeMaxVisible();
     // Use ref to track if title has been generated
     const titleGeneratedRef = useRef(false);
     // Use ref to track latest messages for avoiding stale closure
     const messagesRef = useRef([]);
     // Use ref to preserve createdAt timestamp across saves
     const sessionCreatedAtRef = useRef(0);
+    // Session start time for duration tracking
+    const sessionStartTimeRef = useRef(Date.now());
     // Initialize config on mount
     useEffect(() => {
         const init = async () => {
@@ -335,6 +378,24 @@ const Chat = () => {
     useEffect(() => {
         messagesRef.current = messages;
     }, [messages]);
+    // Auto-scroll to bottom when new messages arrive
+    useEffect(() => {
+        setScrollOffset(0);
+    }, [messages.length]);
+    // Clamp scrollOffset when terminal resizes to prevent blank space
+    useEffect(() => {
+        setScrollOffset(prev => {
+            const maxOffset = Math.max(0, messages.length - MIN_VISIBLE_MESSAGES);
+            return Math.min(prev, maxOffset);
+        });
+    }, [terminalRows, terminalCols, messages.length]);
+    // Compute visible messages window
+    const totalMessages = messages.length;
+    const startIndex = Math.max(0, totalMessages - maxVisibleMessages - scrollOffset);
+    const endIndex = Math.max(0, totalMessages - scrollOffset);
+    const visibleMessages = messages.slice(startIndex, endIndex);
+    const hasMoreAbove = startIndex > 0;
+    const hasMoreBelow = scrollOffset > 0;
     // Auto-save session when messages change
     useEffect(() => {
         if (isInitialized && messages.length > 0 && sessionId) {
@@ -408,7 +469,7 @@ const Chat = () => {
             setCurrentModel(selectedModel);
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✅ Model switched to ${selectedModel}`
+                    content: `🤖 Model switched to ${selectedModel}`
                 }]);
         }
         setShowModelSelector(false);
@@ -420,21 +481,37 @@ const Chat = () => {
             setCurrentModel(trimmedModel);
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✅ Model switched to ${trimmedModel}`
+                    content: `🤖 Model switched to ${trimmedModel}`
                 }]);
         }
         else {
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `❌ Unknown model: ${trimmedModel}\nAvailable models: ${AVAILABLE_MODELS.join(', ')}`
+                    content: `⚠️ Unknown model: ${trimmedModel}\n\nAvailable models:\n${AVAILABLE_MODELS.join('\n')}`
                 }]);
         }
     }, []);
     const showHelp = useCallback(() => {
-        const helpText = COMMANDS.map(cmd => `  ${cmd.name.padEnd(12)} ${cmd.description}${cmd.usage ? ` (${cmd.usage})` : ''}`).join('\n');
+        const helpText = COMMANDS.map(cmd => `  ${cmd.name.padEnd(12)} ${cmd.description}${cmd.usage ? ` · ${cmd.usage}` : ''}`).join('\n');
         setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages`
+                content: `📖 Available Commands
+
+${helpText}
+
+⌨️  Keyboard Shortcuts
+  Ctrl+R       Regenerate last response
+  Ctrl+L       Clear chat history
+  Ctrl+P / ↑   Edit last user message
+  Ctrl+U       Scroll up messages
+  Ctrl+D       Scroll down messages
+  Shift+Enter  Insert new line (multiline)
+  ESC          Exit / Cancel selection
+
+💡 Tips
+• Type / and use ↑↓ to select commands
+• Use @filename to attach files
+• Use Shift+Enter for multiline messages`
             }]);
     }, []);
     const showModels = useCallback(() => {
@@ -447,18 +524,19 @@ const Chat = () => {
         if (sessions.length === 0) {
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: 'No saved sessions found.'
+                    content: '💭 No saved sessions found.'
                 }]);
             return;
         }
         const sessionList = sessions.map((s, i) => {
             const date = new Date(s.updatedAt).toLocaleDateString();
             const time = new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            return `  ${i + 1}. ${s.title} | ${date} ${time} | ${s.messages.length} messages`;
+            const isCurrent = s.id === sessionId;
+            return `  ${i + 1}. ${isCurrent ? '▸ ' : '  '}${s.title} · ${date} ${time} · ${s.messages.length} messages${isCurrent ? ' (current)' : ''}`;
         }).join('\n');
         setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `📚 Recent Sessions (last 10):\n\n${sessionList}\n\nUse /resume <id> to restore a session.\nCurrent session ID: ${sessionId.slice(0, 8)}...`
+                content: `📚 Recent Sessions (last 10)\n\n${sessionList}\n\n💡 Use /resume <id> to restore a session`
             }]);
     }, [sessionId]);
     const resumeSession = useCallback(async (targetSessionId) => {
@@ -471,10 +549,11 @@ const Chat = () => {
             setSessionId(session.id);
             setSessionTitle(session.title);
             sessionCreatedAtRef.current = session.createdAt;
+            sessionStartTimeRef.current = Date.now();
             titleGeneratedRef.current = true;
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✅ Resumed session: "${session.title}"`
+                    content: `✨ Resumed session: "${session.title}"`
                 }]);
         }
         else {
@@ -491,11 +570,58 @@ const Chat = () => {
         setSessionTitle('');
         titleGeneratedRef.current = false;
         sessionCreatedAtRef.current = Date.now();
+        sessionStartTimeRef.current = Date.now();
         setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: '✅ Started new session'
+                content: '✨ Started new session'
             }]);
     }, []);
+    // Format duration from milliseconds to human-readable string
+    const formatDuration = (ms) => {
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        if (hours > 0) {
+            return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+        }
+        if (minutes > 0) {
+            return `${minutes}m ${seconds % 60}s`;
+        }
+        return `${seconds}s`;
+    };
+    // Show exit statistics with a beautiful panel
+    const showExitStats = useCallback(async () => {
+        const duration = Date.now() - sessionStartTimeRef.current;
+        const userMessages = messages.filter(m => m.role === 'user').length;
+        const assistantMessages = messages.filter(m => m.role === 'assistant').length;
+        const totalMessages = userMessages + assistantMessages;
+        const totalTokens = calculateTokens(messages);
+        // Create the stats panel
+        const title = sessionTitle || 'Untitled Session';
+        const displayTitle = title.length > 35 ? title.substring(0, 35) + '...' : title;
+        const durationStr = formatDuration(duration);
+        const tokensStr = formatNumber(totalTokens);
+        // Print exit stats panel
+        console.clear();
+        console.log('');
+        console.log('╔══════════════════════════════════════════════════════╗');
+        console.log('║                                                      ║');
+        console.log('║           👋  Thanks for chatting!                   ║');
+        console.log('║                                                      ║');
+        console.log('╠══════════════════════════════════════════════════════╣');
+        console.log(`║  📋  Session : ${displayTitle.padEnd(39)}║`);
+        console.log(`║  ⏱️   Duration : ${durationStr.padEnd(37)}║`);
+        console.log(`║  💬  Messages: ${String(totalMessages).padStart(3)}  (${String(userMessages).padStart(2)} user · ${String(assistantMessages).padStart(2)} assistant)       ║`);
+        console.log(`║  🤖  Model   : ${currentModel.padEnd(39)}║`);
+        console.log(`║  🪙  Tokens  : ${tokensStr.padEnd(39)}║`);
+        console.log('╚══════════════════════════════════════════════════════╝');
+        console.log('');
+        console.log('              Have a great day! ✨');
+        console.log('');
+        // Wait 1.5 seconds before exiting
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        exit();
+    }, [messages, sessionTitle, currentModel, exit]);
     const handleResumePrompt = useCallback((accept) => {
         if (accept && pendingSession) {
             setMessages(pendingSession.messages);
@@ -503,15 +629,17 @@ const Chat = () => {
             setSessionId(pendingSession.id);
             setSessionTitle(pendingSession.title);
             titleGeneratedRef.current = true;
+            sessionStartTimeRef.current = Date.now();
             setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✅ Resumed session: "${pendingSession.title}"`
+                    content: `✨ Resumed session: "${pendingSession.title}"`
                 }]);
         }
         else {
             // Start fresh with new session ID
             const newSessionId = generateSessionId();
             setSessionId(newSessionId);
+            sessionStartTimeRef.current = Date.now();
         }
         setPendingSession(null);
     }, [pendingSession]);
@@ -533,7 +661,7 @@ const Chat = () => {
             return;
         }
         if (trimmedValue === '/exit' || trimmedValue === '/quit') {
-            exit();
+            await showExitStats();
             return;
         }
         if (trimmedValue === '/help') {
@@ -725,6 +853,17 @@ const Chat = () => {
                 editLastUserMessage();
                 return;
             }
+            // Ctrl+U: Scroll up messages
+            if (ch.toLowerCase() === 'u') {
+                const maxScrollOffset = Math.max(0, messages.length - maxVisibleMessages);
+                setScrollOffset(prev => Math.min(prev + maxVisibleMessages, maxScrollOffset));
+                return;
+            }
+            // Ctrl+D: Scroll down messages
+            if (ch.toLowerCase() === 'd') {
+                setScrollOffset(prev => Math.max(0, prev - maxVisibleMessages));
+                return;
+            }
         }
         // Handle resume prompt Y/N
         if (pendingSession) {
@@ -805,36 +944,45 @@ const Chat = () => {
             React.createElement(Text, { color: "cyan" },
                 React.createElement(Spinner, { type: "dots" }),
                 ' ',
-                "Loading...")));
+                "Initializing..."),
+            React.createElement(Text, { color: "gray" }, "Loading configuration and checking for previous sessions")));
     }
     return (React.createElement(Box, { flexDirection: "column", height: "100%" },
-        React.createElement(Box, { borderStyle: "single", paddingX: 1 },
-            React.createElement(Text, { bold: true, color: "cyan" }, "\uD83E\uDD16 GPT CLI"),
-            React.createElement(Text, null, " | Model: "),
-            React.createElement(Text, { bold: true, color: "yellow" }, currentModel),
+        React.createElement(Box, { borderStyle: "round", borderColor: "cyan", paddingX: 1 },
+            React.createElement(Text, { bold: true, color: "cyan" }, "\u26A1 GPT CLI"),
+            React.createElement(Text, { color: "gray" }, " \u2502 "),
+            React.createElement(Text, { color: "white" }, "Model:"),
+            React.createElement(Text, { bold: true, color: "yellow" },
+                " ",
+                currentModel),
             sessionTitle && (React.createElement(React.Fragment, null,
-                React.createElement(Text, null, " | "),
-                React.createElement(Text, { bold: true, color: "green" }, sessionTitle))),
-            React.createElement(Text, null, " | "),
+                React.createElement(Text, { color: "gray" }, " \u2502 "),
+                React.createElement(Text, { color: "white" }, "Session:"),
+                React.createElement(Text, { bold: true, color: "green" },
+                    " ",
+                    sessionTitle.length > 20 ? sessionTitle.substring(0, 20) + '...' : sessionTitle))),
+            React.createElement(Text, { color: "gray" }, " \u2502 "),
             React.createElement(Text, { color: "gray" },
-                "Tokens: ",
+                "\uD83E\uDE99 ",
                 formatNumber(calculateTokens(messages)),
-                " / ",
+                "/",
                 formatNumber(getModelTokenLimit(currentModel))),
-            React.createElement(Text, null, " | "),
-            React.createElement(Text, { bold: true }, "/help")),
-        pendingSession && (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: "yellow", paddingX: 1, marginX: 1, marginY: 1 },
+            React.createElement(Text, { color: "gray" }, " \u2502 "),
+            React.createElement(Text, { bold: true, color: "cyan" }, "/help")),
+        pendingSession && (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: "yellow", paddingX: 2, marginX: 1, marginY: 1 },
             React.createElement(Text, { bold: true, color: "yellow" }, "\uD83D\uDCBE Resume Previous Session?"),
-            React.createElement(Text, null,
-                "Last session: \"",
-                pendingSession.title,
-                "\""),
-            React.createElement(Text, null,
-                "Messages: ",
-                pendingSession.messages.length),
-            React.createElement(Text, null,
-                "Last updated: ",
-                new Date(pendingSession.updatedAt).toLocaleString()),
+            React.createElement(Box, { marginY: 1 },
+                React.createElement(Text, { color: "white" }, "Session: "),
+                React.createElement(Text, { bold: true, color: "green" },
+                    "\"",
+                    pendingSession.title,
+                    "\"")),
+            React.createElement(Box, null,
+                React.createElement(Text, { color: "gray" },
+                    "\uD83D\uDCAC ",
+                    pendingSession.messages.length,
+                    " messages \u00B7 \uD83D\uDCC5 ",
+                    new Date(pendingSession.updatedAt).toLocaleString())),
             React.createElement(Box, { marginTop: 1 },
                 React.createElement(Text, { color: "gray" }, "Press "),
                 React.createElement(Text, { bold: true, color: "green" }, "Y"),
@@ -842,58 +990,71 @@ const Chat = () => {
                 React.createElement(Text, { bold: true, color: "red" }, "N"),
                 React.createElement(Text, { color: "gray" }, " to start fresh")))),
         React.createElement(Box, { flexDirection: "column", flexGrow: 1, padding: 1 },
-            messages.length === 0 && !pendingSession && (React.createElement(Box, null,
-                React.createElement(Text, { color: "gray" }, "Welcome! Start typing to chat with GPT.\\n"),
-                React.createElement(Text, { color: "gray" }, "Type "),
-                React.createElement(Text, { bold: true, color: "cyan" }, "/"),
-                React.createElement(Text, { color: "gray" }, " for commands, "),
-                React.createElement(Text, { bold: true, color: "cyan" }, "Shift+Enter"),
-                React.createElement(Text, { color: "gray" }, " for new line."))),
-            messages.map((message, index) => (React.createElement(Box, { key: index, flexDirection: "column", marginY: 1 },
+            messages.length === 0 && !pendingSession && (React.createElement(Box, { flexDirection: "column" },
+                React.createElement(Text, { color: "cyan" }, "\uD83D\uDC4B Welcome! Start typing to chat with GPT."),
+                React.createElement(Box, { marginTop: 1 },
+                    React.createElement(Text, { color: "gray" }, "\uD83D\uDCA1 Tip: Type "),
+                    React.createElement(Text, { bold: true, color: "cyan" }, "/"),
+                    React.createElement(Text, { color: "gray" }, " for commands, "),
+                    React.createElement(Text, { bold: true, color: "cyan" }, "Shift+Enter"),
+                    React.createElement(Text, { color: "gray" }, " for new line")))),
+            hasMoreAbove && (React.createElement(Box, null,
+                React.createElement(Text, { color: "gray" },
+                    "\u25B2 ",
+                    startIndex,
+                    " earlier message",
+                    startIndex !== 1 ? 's' : '',
+                    " (Ctrl+U to scroll up)"))),
+            visibleMessages.map((message, index) => (React.createElement(Box, { key: startIndex + index, flexDirection: "column", marginY: 1 },
                 React.createElement(Box, null,
-                    React.createElement(Text, { bold: true, color: message.role === 'user' ? 'green' : 'blue' }, message.role === 'user' ? 'You:' : 'GPT:'),
-                    message.model && (React.createElement(Text, { color: "gray" },
-                        " (",
-                        message.model,
-                        ")"))),
-                React.createElement(Box, { paddingLeft: 2, flexDirection: "column" },
+                    React.createElement(Text, { bold: true, color: message.role === 'user' ? 'green' : 'blue' }, message.role === 'user' ? '🧑 You' : '✨ Assistant'),
+                    message.model && message.role === 'assistant' && (React.createElement(Text, { color: "gray" },
+                        " \u00B7 ",
+                        message.model))),
+                React.createElement(Box, { paddingLeft: 2, flexDirection: "column", borderLeft: message.role === 'user', borderColor: message.role === 'user' ? 'green' : 'blue' },
                     React.createElement(MessageContent, { content: message.content, isStreaming: message.isStreaming, streamingContent: streamingContent }))))),
             isThinking && (React.createElement(Box, null,
                 React.createElement(Text, { color: "yellow" },
                     React.createElement(Spinner, { type: "dots" }),
                     ' ',
-                    "Thinking...")))),
+                    "Thinking..."))),
+            hasMoreBelow && (React.createElement(Box, null,
+                React.createElement(Text, { color: "gray" },
+                    "\u25BC ",
+                    scrollOffset,
+                    " newer message",
+                    scrollOffset !== 1 ? 's' : '',
+                    " (Ctrl+D to scroll down)")))),
         showModelSelector && (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: "yellow", paddingX: 1, marginX: 1 },
             React.createElement(Text, { bold: true, color: "yellow" }, "\uD83E\uDD16 Select Model:"),
             AVAILABLE_MODELS.map((model, index) => (React.createElement(Box, { key: model },
-                React.createElement(Text, { color: index === selectedModelIndex ? 'yellow' : 'white' }, index === selectedModelIndex ? '▶ ' : '  '),
+                React.createElement(Text, { color: index === selectedModelIndex ? 'yellow' : 'white' }, index === selectedModelIndex ? '● ' : '○ '),
                 React.createElement(Text, { bold: index === selectedModelIndex, color: index === selectedModelIndex ? 'yellow' : model === currentModel ? 'green' : 'white' }, model),
                 model === currentModel && (React.createElement(Text, { color: "green" }, " \u2713 current"))))),
             React.createElement(Text, { color: "gray" }, "Use \u2191\u2193 to navigate, Enter to select, ESC to cancel"))),
         showCommands && (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 1, marginX: 1 },
             React.createElement(Text, { bold: true, color: "cyan" }, "Commands:"),
             filteredCommands.map((cmd, index) => (React.createElement(Box, { key: cmd.name },
-                React.createElement(Text, { color: index === selectedCommandIndex ? 'cyan' : 'white' }, index === selectedCommandIndex ? '▶ ' : '  '),
+                React.createElement(Text, { color: index === selectedCommandIndex ? 'cyan' : 'white' }, index === selectedCommandIndex ? '● ' : '○ '),
                 React.createElement(Text, { bold: index === selectedCommandIndex, color: index === selectedCommandIndex ? 'cyan' : 'white' }, cmd.name),
                 React.createElement(Text, { color: "gray" },
-                    " - ",
+                    " \u2014 ",
                     cmd.description)))),
             React.createElement(Text, { color: "gray" }, "Use \u2191\u2193 to navigate, Tab/Enter to select"))),
         showFileSelector && (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: "magenta", paddingX: 1, marginX: 1, marginBottom: 1 },
             React.createElement(Text, { bold: true, color: "magenta" }, "\uD83D\uDCCE Attach File:"),
             fileList.map((file, index) => (React.createElement(Box, { key: file },
-                React.createElement(Text, { color: index === selectedFileIndex ? 'magenta' : 'white' },
-                    index === selectedFileIndex ? '▶ ' : '  ',
-                    file)))),
+                React.createElement(Text, { color: index === selectedFileIndex ? 'magenta' : 'white' }, index === selectedFileIndex ? '● ' : '○ '),
+                React.createElement(Text, { color: index === selectedFileIndex ? 'magenta' : 'white' }, file)))),
             React.createElement(Text, { color: "gray" }, "Use \u2191\u2193 to navigate, Tab/Enter to select, ESC to cancel"))),
         attachedFiles.length > 0 && !showFileSelector && (React.createElement(Box, { marginX: 1, marginBottom: 1 },
-            React.createElement(Text, { color: "gray" },
+            React.createElement(Text, { color: "magenta" },
                 "\uD83D\uDCCE ",
                 attachedFiles.join(', ')))),
-        React.createElement(Box, { borderStyle: "single", borderColor: showModelSelector ? 'yellow' : 'cyan', paddingX: 1 },
+        React.createElement(Box, { borderStyle: "round", borderColor: showModelSelector ? 'yellow' : 'green', paddingX: 1 },
             React.createElement(Box, { marginRight: 1 },
-                React.createElement(Text, { bold: true, color: "green" }, "\u279C")),
-            React.createElement(TextInput, { value: input, onChange: setInput, onSubmit: handleSubmit, focus: !showCommands && !showModelSelector && !showFileSelector, placeholder: showModelSelector ? "Select model with arrow keys..." : "Type message (Shift+Enter for new line, / for commands)..." }))));
+                React.createElement(Text, { bold: true, color: "green" }, "\u276F")),
+            React.createElement(TextInput, { value: input, onChange: setInput, onSubmit: handleSubmit, focus: !showCommands && !showModelSelector && !showFileSelector, placeholder: showModelSelector ? "Use ↑↓ to select a model, Enter to confirm" : "Type a message... (Shift+Enter for new line, / for commands, ESC to exit)" }))));
 };
 export default Chat;
 //# sourceMappingURL=Chat.js.map
