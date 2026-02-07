@@ -43,6 +43,8 @@ interface Config {
 const MIN_TEMPERATURE = 0;
 const MAX_TEMPERATURE = 2;
 const DEFAULT_TEMPERATURE = 0.7;
+const TEMPERATURE_COMMAND = '/temperature';
+const TEMPERATURE_COMMAND_PREFIX = `${TEMPERATURE_COMMAND} `;
 
 const COMMANDS: Command[] = [
   { name: '/clear', description: 'Clear chat history' },
@@ -50,7 +52,7 @@ const COMMANDS: Command[] = [
   { name: '/quit', description: 'Exit the application (alias)' },
   { name: '/model', description: 'Switch AI model', usage: '/model <model-name>' },
   { name: '/models', description: 'List available models' },
-  { name: '/temperature', description: 'Show or set temperature', usage: `/temperature <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>` },
+  { name: TEMPERATURE_COMMAND, description: 'Show or set temperature', usage: `${TEMPERATURE_COMMAND} <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>` },
   { name: '/help', description: 'Show this help message' },
   { name: '/sessions', description: 'List recent sessions' },
   { name: '/resume', description: 'Resume a session', usage: '/resume <id>' },
@@ -731,7 +733,7 @@ const Chat: React.FC = () => {
       return;
     }
 
-    if (trimmedValue === '/temperature') {
+    if (trimmedValue === TEMPERATURE_COMMAND) {
       setMessages(prev => [...prev, { 
         role: 'assistant', 
         content: `🌡️ Current temperature: ${temperature}` 
@@ -740,8 +742,8 @@ const Chat: React.FC = () => {
       return;
     }
 
-    if (trimmedValue.startsWith('/temperature ')) {
-      const value = trimmedValue.slice(13).trim();
+    if (trimmedValue.startsWith(TEMPERATURE_COMMAND_PREFIX)) {
+      const value = trimmedValue.slice(TEMPERATURE_COMMAND_PREFIX.length).trim();
       const parsed = Number(value);
       if (!value || Number.isNaN(parsed) || parsed < MIN_TEMPERATURE || parsed > MAX_TEMPERATURE) {
         setMessages(prev => [...prev, { 
