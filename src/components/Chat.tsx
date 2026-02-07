@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { Highlight } from 'ink-highlight';
@@ -355,6 +355,13 @@ const Chat: React.FC = () => {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
 
+  // Virtual scroll state
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const { stdout } = useStdout();
+  const terminalRows = stdout.rows || 24;
+  // Estimate visible messages: reserve ~8 rows for header/input/chrome, ~4 rows per message avg
+  const maxVisibleMessages = Math.max(3, Math.floor((terminalRows - 8) / 4));
+
   // Use ref to track if title has been generated
   const titleGeneratedRef = useRef(false);
 
@@ -405,6 +412,19 @@ const Chat: React.FC = () => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [messages.length]);
+
+  // Compute visible messages window
+  const totalMessages = messages.length;
+  const startIndex = Math.max(0, totalMessages - maxVisibleMessages - scrollOffset);
+  const endIndex = Math.max(0, totalMessages - scrollOffset);
+  const visibleMessages = messages.slice(startIndex, endIndex);
+  const hasMoreAbove = startIndex > 0;
+  const hasMoreBelow = scrollOffset > 0;
 
   // Auto-save session when messages change
   useEffect(() => {
@@ -511,7 +531,7 @@ const Chat: React.FC = () => {
     
     setMessages(prev => [...prev, { 
       role: 'assistant', 
-      content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages` 
+      content: `📖 Available Commands:\n\n${helpText}\n\nKeyboard Shortcuts:\n  Ctrl+R         Regenerate last response\n  Ctrl+L         Clear chat history\n  Ctrl+P/↑       Edit last user message\n  Ctrl+U         Scroll up messages\n  Ctrl+D         Scroll down messages\n  Shift+Enter    Insert new line (multiline input)\n  ESC            Exit / Cancel selection\n\nTips:\n• Type / and use ↑↓ to select commands\n• Use @filename to attach files\n• Use Shift+Enter for multiline messages` 
     }]);
   }, []);
 
@@ -833,6 +853,16 @@ const Chat: React.FC = () => {
         editLastUserMessage();
         return;
       }
+      // Ctrl+U: Scroll up messages
+      if (ch.toLowerCase() === 'u') {
+        setScrollOffset(prev => Math.min(prev + maxVisibleMessages, Math.max(0, messages.length - maxVisibleMessages)));
+        return;
+      }
+      // Ctrl+D: Scroll down messages
+      if (ch.toLowerCase() === 'd') {
+        setScrollOffset(prev => Math.max(0, prev - maxVisibleMessages));
+        return;
+      }
     }
 
     // Handle resume prompt Y/N
@@ -975,7 +1005,7 @@ const Chat: React.FC = () => {
         </Box>
       )}
 
-      {/* Messages */}
+      {/* Messages (virtual scrolling - only renders visible messages) */}
       <Box flexDirection="column" flexGrow={1} padding={1}>
         {messages.length === 0 && !pendingSession && (
           <Box>
@@ -988,8 +1018,14 @@ const Chat: React.FC = () => {
           </Box>
         )}
         
-        {messages.map((message, index) => (
-          <Box key={index} flexDirection="column" marginY={1}>
+        {hasMoreAbove && (
+          <Box>
+            <Text color="gray">▲ {startIndex} earlier message{startIndex !== 1 ? 's' : ''} (Ctrl+U to scroll up)</Text>
+          </Box>
+        )}
+
+        {visibleMessages.map((message, index) => (
+          <Box key={startIndex + index} flexDirection="column" marginY={1}>
             <Box>
               <Text bold color={message.role === 'user' ? 'green' : 'blue'}>
                 {message.role === 'user' ? 'You:' : 'GPT:'}
@@ -1014,6 +1050,12 @@ const Chat: React.FC = () => {
               <Spinner type="dots" />
               {' '}Thinking...
             </Text>
+          </Box>
+        )}
+
+        {hasMoreBelow && (
+          <Box>
+            <Text color="gray">▼ {scrollOffset} newer message{scrollOffset !== 1 ? 's' : ''} (Ctrl+D to scroll down)</Text>
           </Box>
         )}
       </Box>
