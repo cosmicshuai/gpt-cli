@@ -1115,6 +1115,7 @@ const Chat: React.FC = () => {
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
+          focus={!showCommands && !showModelSelector && !showFileSelector}
           placeholder={showModelSelector ? "Select model with arrow keys..." : "Type message (Shift+Enter for new line, / for commands)..."}
         />
       </Box>

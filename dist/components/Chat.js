@@ -893,7 +893,7 @@ const Chat = () => {
         React.createElement(Box, { borderStyle: "single", borderColor: showModelSelector ? 'yellow' : 'cyan', paddingX: 1 },
             React.createElement(Box, { marginRight: 1 },
                 React.createElement(Text, { bold: true, color: "green" }, "\u279C")),
-            React.createElement(TextInput, { value: input, onChange: setInput, onSubmit: handleSubmit, placeholder: showModelSelector ? "Select model with arrow keys..." : "Type message (Shift+Enter for new line, / for commands)..." }))));
+            React.createElement(TextInput, { value: input, onChange: setInput, onSubmit: handleSubmit, focus: !showCommands && !showModelSelector && !showFileSelector, placeholder: showModelSelector ? "Select model with arrow keys..." : "Type message (Shift+Enter for new line, / for commands)..." }))));
 };
 export default Chat;
 //# sourceMappingURL=Chat.js.map
