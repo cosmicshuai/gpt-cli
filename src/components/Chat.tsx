@@ -40,13 +40,17 @@ interface Config {
   lastSessionId?: string;
 }
 
+const MIN_TEMPERATURE = 0;
+const MAX_TEMPERATURE = 2;
+const DEFAULT_TEMPERATURE = 0.7;
+
 const COMMANDS: Command[] = [
   { name: '/clear', description: 'Clear chat history' },
   { name: '/exit', description: 'Exit the application' },
   { name: '/quit', description: 'Exit the application (alias)' },
   { name: '/model', description: 'Switch AI model', usage: '/model <model-name>' },
   { name: '/models', description: 'List available models' },
-  { name: '/temperature', description: 'Show or set temperature', usage: '/temperature <0-2>' },
+  { name: '/temperature', description: 'Show or set temperature', usage: `/temperature <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>` },
   { name: '/help', description: 'Show this help message' },
   { name: '/sessions', description: 'List recent sessions' },
   { name: '/resume', description: 'Resume a session', usage: '/resume <id>' },
@@ -104,8 +108,8 @@ const getModelTokenLimit = (model: string): number => {
 };
 
 const normalizeTemperature = (value?: number): number => {
-  if (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > 2) {
-    return 0.7;
+  if (typeof value !== 'number' || Number.isNaN(value) || value < MIN_TEMPERATURE || value > MAX_TEMPERATURE) {
+    return DEFAULT_TEMPERATURE;
   }
   return value;
 };
@@ -185,7 +189,7 @@ const loadConfig = async (): Promise<Config> => {
     return config;
   } catch {
     // Return default config if file doesn't exist or is invalid
-    return { currentModel: 'gpt-4o-mini', temperature: 0.7 };
+    return { currentModel: 'gpt-4o-mini', temperature: DEFAULT_TEMPERATURE };
   }
 };
 
@@ -365,7 +369,7 @@ const Chat: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [currentModel, setCurrentModel] = useState('gpt-4o-mini');
-  const [temperature, setTemperature] = useState(0.7);
+  const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE);
   const [sessionId, setSessionId] = useState<string>('');
   const [sessionTitle, setSessionTitle] = useState<string>('');
   const [isInitialized, setIsInitialized] = useState(false);
@@ -739,10 +743,10 @@ const Chat: React.FC = () => {
     if (trimmedValue.startsWith('/temperature ')) {
       const value = trimmedValue.slice(13).trim();
       const parsed = Number(value);
-      if (!value || Number.isNaN(parsed) || parsed < 0 || parsed > 2) {
+      if (!value || Number.isNaN(parsed) || parsed < MIN_TEMPERATURE || parsed > MAX_TEMPERATURE) {
         setMessages(prev => [...prev, { 
           role: 'assistant', 
-          content: '❌ Invalid temperature. Use /temperature <0-2>.' 
+          content: `❌ Invalid temperature. Use /temperature <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>.` 
         }]);
       } else {
         setTemperature(parsed);
