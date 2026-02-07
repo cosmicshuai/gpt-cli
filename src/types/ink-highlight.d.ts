@@ -5,8 +5,10 @@ declare module 'ink-highlight' {
     code: string;
     language?: string;
     theme?: 'dark' | 'light';
+    ignoreIllegals?: boolean;
+    languageSubset?: string[];
   }
   
   const Highlight: React.FC<HighlightProps>;
-  export default Highlight;
+  export { Highlight };
 }

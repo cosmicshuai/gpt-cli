@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
-import Highlight from 'ink-highlight';
+import { Highlight } from 'ink-highlight';
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import { homedir } from 'os';
@@ -793,7 +793,7 @@ const Chat: React.FC = () => {
       return;
     }
     // Handle keyboard shortcuts (Ctrl+key)
-    if (key.ctrl) {
+    if (key.ctrl && ch) {
       // Ctrl+R: Regenerate last response
       if (ch.toLowerCase() === 'r') {
         regenerateLastResponse();
