@@ -40,6 +40,7 @@ npm start
 |---------|-------------|
 | `/clear` | Clear chat history |
 | `/exit` or `/quit` | Exit the application |
+| `/temperature` | Show or set temperature (`/temperature <0-2>`) |
 | `ESC` | Exit the application |
 
 ## Environment Variables
