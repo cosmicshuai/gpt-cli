@@ -600,6 +600,11 @@ const Chat: React.FC = () => {
   }, [pendingSession]);
 
   const handleSubmit = useCallback(async (value: string) => {
+    // 阻止并发请求
+    if (isLoading || isThinking) {
+      return;
+    }
+
     if (showCommands || showModelSelector || showFileSelector) {
       return;
     }
@@ -747,8 +752,9 @@ const Chat: React.FC = () => {
     } finally {
       setIsLoading(false);
       setStreamingContent('');
+      setIsThinking(false);
     }
-  }, [messages, exit, currentModel, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle, attachedFiles]);
+  }, [messages, exit, currentModel, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle, attachedFiles, isLoading, isThinking]);
 
   // Regenerate last assistant response
   const regenerateLastResponse = useCallback(async () => {
