@@ -36,8 +36,15 @@ interface Session {
 
 interface Config {
   currentModel: string;
+  temperature: number;
   lastSessionId?: string;
 }
+
+const MIN_TEMPERATURE = 0;
+const MAX_TEMPERATURE = 2;
+const DEFAULT_TEMPERATURE = 0.7;
+const TEMPERATURE_COMMAND = '/temperature';
+const TEMPERATURE_COMMAND_PREFIX = `${TEMPERATURE_COMMAND} `;
 
 const COMMANDS: Command[] = [
   { name: '/clear', description: 'Clear chat history' },
@@ -45,6 +52,7 @@ const COMMANDS: Command[] = [
   { name: '/quit', description: 'Exit the application (alias)' },
   { name: '/model', description: 'Switch AI model', usage: '/model <model-name>' },
   { name: '/models', description: 'List available models' },
+  { name: TEMPERATURE_COMMAND, description: 'Show or set temperature', usage: `${TEMPERATURE_COMMAND} <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>` },
   { name: '/help', description: 'Show this help message' },
   { name: '/sessions', description: 'List recent sessions' },
   { name: '/resume', description: 'Resume a session', usage: '/resume <id>' },
@@ -99,6 +107,13 @@ const getModelTokenLimit = (model: string): number => {
   if (model.includes('gpt-4')) return 128000;
   if (model.includes('gpt-3.5')) return 16385;
   return 128000;
+};
+
+const normalizeTemperature = (value?: number): number => {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < MIN_TEMPERATURE || value > MAX_TEMPERATURE) {
+    return DEFAULT_TEMPERATURE;
+  }
+  return value;
 };
 
 // Format number with commas
@@ -172,10 +187,11 @@ const loadConfig = async (): Promise<Config> => {
     if (!AVAILABLE_MODELS.includes(config.currentModel)) {
       config.currentModel = 'gpt-4o-mini';
     }
+    config.temperature = normalizeTemperature(config.temperature);
     return config;
   } catch {
     // Return default config if file doesn't exist or is invalid
-    return { currentModel: 'gpt-4o-mini' };
+    return { currentModel: 'gpt-4o-mini', temperature: DEFAULT_TEMPERATURE };
   }
 };
 
@@ -355,6 +371,7 @@ const Chat: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [currentModel, setCurrentModel] = useState('gpt-4o-mini');
+  const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE);
   const [sessionId, setSessionId] = useState<string>('');
   const [sessionTitle, setSessionTitle] = useState<string>('');
   const [isInitialized, setIsInitialized] = useState(false);
@@ -417,6 +434,7 @@ const Chat: React.FC = () => {
       await ensureConfigDir();
       const config = await loadConfig();
       setCurrentModel(config.currentModel);
+      setTemperature(config.temperature);
       
       // Generate new session ID
       const newSessionId = generateSessionId();
@@ -441,12 +459,13 @@ const Chat: React.FC = () => {
       const updateConfig = async () => {
         const config = await loadConfig();
         config.currentModel = currentModel;
+        config.temperature = temperature;
         config.lastSessionId = sessionId;
         await saveConfig(config);
       };
       updateConfig();
     }
-  }, [currentModel, sessionId, isInitialized]);
+  }, [currentModel, temperature, sessionId, isInitialized]);
 
   // Sync messagesRef with latest messages
   useEffect(() => {
@@ -790,6 +809,34 @@ ${helpText}
       return;
     }
 
+    if (trimmedValue === TEMPERATURE_COMMAND) {
+      setMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: `🌡️ Current temperature: ${temperature}` 
+      }]);
+      setInput('');
+      return;
+    }
+
+    if (trimmedValue.startsWith(TEMPERATURE_COMMAND_PREFIX)) {
+      const value = trimmedValue.slice(TEMPERATURE_COMMAND_PREFIX.length).trim();
+      const parsed = Number(value);
+      if (!value || Number.isNaN(parsed) || parsed < MIN_TEMPERATURE || parsed > MAX_TEMPERATURE) {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: `❌ Invalid temperature. Use /temperature <${MIN_TEMPERATURE}-${MAX_TEMPERATURE}>.` 
+        }]);
+      } else {
+        setTemperature(parsed);
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: `✅ Temperature set to ${parsed}` 
+        }]);
+      }
+      setInput('');
+      return;
+    }
+
     if (trimmedValue === '/sessions') {
       await showSessions();
       setInput('');
@@ -856,6 +903,7 @@ ${helpText}
           ...messages.map(m => ({ role: m.role, content: m.content })),
           { role: 'user', content: finalContent }
         ],
+        temperature,
         stream: true,
       });
 
@@ -895,7 +943,7 @@ ${helpText}
       setStreamingContent('');
       setIsThinking(false);
     }
-  }, [messages, exit, currentModel, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle, attachedFiles, isLoading, isThinking]);
+  }, [messages, exit, currentModel, temperature, showHelp, showModels, handleModelSwitch, showCommands, showModelSelector, showFileSelector, showSessions, resumeSession, startNewSession, sessionTitle, attachedFiles, isLoading, isThinking]);
 
   // Regenerate last assistant response
   const regenerateLastResponse = useCallback(async () => {
